@@ -1,10 +1,8 @@
-## Live Dashboard
-
-[UK Gas Demand Forecast dashboard](https://arkady-zelman-uk-gas-demand-forecast-srcdashboardapp-8liq15.streamlit.app/)
-
 # UK Weather-Driven Gas Demand Forecast
 
-A machine learning model that forecasts daily UK gas demand from weather data, with walk-forward validation.
+A machine learning model that forecasts daily UK gas demand from weather data, with walk-forward validation on Gas Year boundaries and honest baseline comparisons.
+
+**[Live Dashboard](https://arkady-zelman-uk-gas-demand-forecast-srcdashboardapp-8liq15.streamlit.app/)** — no setup required, runs in the browser.
 
 ## Quick Start
 
