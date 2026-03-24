@@ -1,9 +1,13 @@
 """Generate demand forecasts from live weather data.
 
-Uses the trained XGBoost model with recent demand history for lag features.
+Prediction is recursive: we predict one day at a time and feed each day's
+output back as the demand_lag_1 / demand_lag_7 / demand_roll_7 for the
+next day.  This matters because without it, demand lags go stale after
+day 1 and the 16-day strip isn't a true sequential forecast — it's just
+day-1 repeated with frozen inputs.
+
 Prediction intervals come from empirical quantiles of the walk-forward
-residuals, which is more honest than assuming Gaussian errors (the residual
-distribution is typically slightly right-skewed in winter due to cold snaps).
+residuals (not Gaussian).
 """
 
 from __future__ import annotations
@@ -31,15 +35,19 @@ from src.model.xgboost_model import GasDemandXGB
 logger = logging.getLogger(__name__)
 
 
-def _build_forecast_features(
+def _build_combined_frame(
     weather_fc: pd.DataFrame,
     recent_demand: pd.DataFrame,
     recent_weather: pd.DataFrame,
-) -> pd.DataFrame:
-    """Build the feature matrix for the forecast horizon.
+) -> tuple[pd.DataFrame, int]:
+    """Splice recent history with forecast weather and compute all
+    features that do NOT depend on demand (weather, calendar, etc.).
 
-    Splices recent history with forecast weather so that lag and rolling
-    features have valid values for the first few forecast days.
+    Demand-dependent features (lags, rolling avg) are left for the
+    recursive loop in generate_forecast because each day's prediction
+    must feed into the next day's inputs.
+
+    Returns (combined_frame, first_forecast_index).
     """
     recent_demand = recent_demand.copy().sort_values("date")
     recent_weather = recent_weather.copy().sort_values("date")
@@ -62,25 +70,26 @@ def _build_forecast_features(
     combined = pd.concat([history, pd.DataFrame(fc_rows)], ignore_index=True)
     combined = combined.sort_values("date").reset_index(drop=True)
 
+    fc_start = int(combined["demand_mcm"].isna().idxmax())
+
+    # -- Weather-derived features (fully known for the entire horizon) --
     combined["hdd"] = (HDD_BASE - combined["temp_mean"]).clip(lower=0)
     combined["cdd"] = (combined["temp_mean"] - CDD_BASE).clip(lower=0)
     combined["wind_chill"] = wind_chill(combined["temp_mean"], combined["windspeed_max"])
     combined["effective_hdd"] = (HDD_BASE - combined["wind_chill"]).clip(lower=0)
 
-    combined["demand_lag_1"] = combined["demand_mcm"].shift(1)
-    combined["demand_lag_7"] = combined["demand_mcm"].shift(7)
+    # Temperature lags/rolls — all based on weather data, no demand dependency
     combined["temp_lag_1"] = combined["temp_mean"].shift(1)
     combined["temp_lag_2"] = combined["temp_mean"].shift(2)
     combined["temp_lag_3"] = combined["temp_mean"].shift(3)
     combined["hdd_lag_1"] = combined["hdd"].shift(1)
     combined["temp_roll_7"] = combined["temp_mean"].rolling(7).mean()
-    combined["demand_roll_7"] = combined["demand_mcm"].rolling(7).mean()
 
+    # Calendar / structural features
     combined["day_of_week"] = combined["date"].dt.dayofweek
     combined["month"] = combined["date"].dt.month
     combined["is_weekend"] = combined["day_of_week"].isin([5, 6]).astype(int)
     combined["is_bank_holiday"] = is_bank_holiday_series(combined["date"])
-
     combined["gas_year"] = gas_year(combined["date"])
     combined["gas_quarter"] = gas_quarter(combined["date"])
     combined["is_winter"] = combined["gas_quarter"].isin([1, 2]).astype(int)
@@ -89,7 +98,12 @@ def _build_forecast_features(
         (combined["date"] >= _COVID_START) & (combined["date"] <= _COVID_END)
     ).astype(int)
 
-    return combined[combined["demand_mcm"].isna()].reset_index(drop=True)
+    # Seed demand lags for the historical portion only
+    combined["demand_lag_1"] = combined["demand_mcm"].shift(1)
+    combined["demand_lag_7"] = combined["demand_mcm"].shift(7)
+    combined["demand_roll_7"] = combined["demand_mcm"].rolling(7).mean()
+
+    return combined, fc_start
 
 
 def generate_forecast(
@@ -97,10 +111,11 @@ def generate_forecast(
     backtest_residuals: np.ndarray | None = None,
     recent_history_days: int = 30,
 ) -> pd.DataFrame | None:
-    """Pull live weather forecast and generate demand predictions.
+    """Pull live weather forecast and predict demand recursively.
 
-    Prediction intervals use empirical quantiles of the backtest residuals
-    (5th/95th percentile) rather than assuming a Gaussian distribution.
+    Each forecast day is predicted individually.  The prediction is written
+    back into the demand series so the next day's lag features reflect it,
+    producing a proper day-ahead chain rather than stale-lag extrapolation.
     """
     wc = WeatherClient()
     weather_fc = wc.get_forecast()
@@ -125,31 +140,52 @@ def generate_forecast(
         weather_cache["date"] > cutoff - pd.Timedelta(days=recent_history_days)
     ]
 
-    fc_features = _build_forecast_features(weather_fc, recent_demand, recent_weather)
-    if fc_features.empty:
+    combined, fc_start = _build_combined_frame(weather_fc, recent_demand, recent_weather)
+
+    if fc_start >= len(combined):
         return None
 
-    for col in FEATURE_COLS:
-        if col not in fc_features.columns:
-            fc_features[col] = 0
-    fc_features[FEATURE_COLS] = fc_features[FEATURE_COLS].ffill().fillna(0)
+    # --- Recursive day-ahead prediction ---
+    # For each forecast day, update demand lags from the growing prediction
+    # series, predict, then write the result back before moving to day+1.
+    for i in range(fc_start, len(combined)):
+        if i >= 1:
+            combined.at[i, "demand_lag_1"] = combined.at[i - 1, "demand_mcm"]
+        if i >= 7:
+            combined.at[i, "demand_lag_7"] = combined.at[i - 7, "demand_mcm"]
 
-    preds = model.predict(fc_features)
+        # Rolling 7-day demand average using the 7 days preceding today
+        roll_start = max(0, i - 7)
+        roll_vals = combined.loc[roll_start : i - 1, "demand_mcm"].dropna()
+        combined.at[i, "demand_roll_7"] = roll_vals.mean() if len(roll_vals) > 0 else 0.0
 
-    result = pd.DataFrame({"date": fc_features["date"].values, "forecast_mcm": preds})
+        # Ensure all feature columns exist and fill remaining gaps
+        for col in FEATURE_COLS:
+            if col not in combined.columns:
+                combined[col] = 0
+        row = combined.loc[[i], FEATURE_COLS].fillna(0)
+
+        pred = float(model.predict(row)[0])
+        combined.at[i, "demand_mcm"] = pred
+
+    # --- Assemble output ---
+    fc = combined.iloc[fc_start:].reset_index(drop=True)
+
+    result = pd.DataFrame({
+        "date": fc["date"].values,
+        "forecast_mcm": fc["demand_mcm"].values,
+    })
 
     for wcol in ["temp_mean", "temp_min", "temp_max", "windspeed_max", "hdd"]:
-        if wcol in fc_features.columns:
-            result[wcol] = fc_features[wcol].values
+        if wcol in fc.columns:
+            result[wcol] = fc[wcol].values
 
-    # Empirical prediction intervals from backtest residuals
     if backtest_residuals is not None and len(backtest_residuals) > 20:
         q05 = float(np.percentile(backtest_residuals, 5))
         q95 = float(np.percentile(backtest_residuals, 95))
         result["lower_mcm"] = result["forecast_mcm"] + q05
         result["upper_mcm"] = result["forecast_mcm"] + q95
     else:
-        # Fallback: ±10%
         result["lower_mcm"] = result["forecast_mcm"] * 0.9
         result["upper_mcm"] = result["forecast_mcm"] * 1.1
 
