@@ -1,0 +1,52 @@
+project:
+  name: "UK Gas Demand Forecast"
+  base_unit: "mcm/d"
+  calorific_value: 39.5          # MJ/m³ — typical UK gas CV
+  mcm_to_gwh: 11.16             # 1 mcm ≈ 11.16 GWh at standard CV
+  mcm_to_therms: 375694.0       # 1 mcm ≈ 375,694 therms
+
+date_range:
+  start: "2020-10-01"           # Gas Year 2020/21 start
+  end: "2026-03-24"
+
+gas_year:
+  start_month: 10               # Gas Year runs Oct–Sep
+  quarters:
+    Q1: [10, 11, 12]            # Oct–Dec  (Winter)
+    Q2: [1, 2, 3]               # Jan–Mar  (Winter)
+    Q3: [4, 5, 6]               # Apr–Jun  (Summer)
+    Q4: [7, 8, 9]               # Jul–Sep  (Summer)
+
+weather:
+  cities:
+    - {name: London,     lat: 51.51, lon: -0.13, weight: 0.40}
+    - {name: Birmingham, lat: 52.48, lon: -1.90, weight: 0.18}
+    - {name: Manchester, lat: 53.48, lon: -2.24, weight: 0.18}
+    - {name: Edinburgh,  lat: 55.95, lon: -3.19, weight: 0.12}
+    - {name: Cardiff,    lat: 51.48, lon: -3.18, weight: 0.12}
+  hdd_base: 15.5
+  cdd_base: 22.0
+
+model:
+  xgboost:
+    n_estimators: 300
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.7
+    min_child_weight: 10
+    reg_alpha: 0.1
+    reg_lambda: 5.0
+  lstm:
+    sequence_length: 14
+    hidden_size: 64
+    num_layers: 1
+    epochs: 50
+    batch_size: 32
+
+backtest:
+  n_folds: 3
+  min_train_years: 2
+
+data_paths:
+  cache: "data/cache"
