@@ -1,4 +1,6 @@
-[Live dashboard]([https://your-app-url.example.com](https://arkady-zelman-uk-gas-demand-forecast-srcdashboardapp-8liq15.streamlit.app/))
+## Live Dashboard
+
+[UK Gas Demand Forecast dashboard](https://arkady-zelman-uk-gas-demand-forecast-srcdashboardapp-8liq15.streamlit.app/)
 
 # UK Weather-Driven Gas Demand Forecast
 
