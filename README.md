@@ -133,6 +133,8 @@ pytest tests/ -v
 
 ## Dependencies
 
-Core: `xgboost`, `scikit-learn`, `pandas`, `numpy`, `torch` (LSTM baseline), `streamlit`, `plotly`, `shap`, `statsmodels`
+Core: `xgboost`, `scikit-learn`, `pandas`, `numpy`, `streamlit`, `plotly`, `shap`, `statsmodels`
 
 Data: `requests`, `pyarrow`, `pyyaml`, `holidays`
+
+Optional: `torch` — only needed for the LSTM comparison baseline, not the dashboard or XGBoost model.  Install manually with `pip install torch` if you want to run the LSTM experiments.
