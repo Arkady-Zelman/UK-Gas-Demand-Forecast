@@ -23,6 +23,7 @@ from src.features.engineer import (
     FEATURE_COLS,
     HDD_BASE,
     CDD_BASE,
+    TREND_EPOCH,
     _COVID_START,
     _COVID_END,
     wind_chill,
@@ -93,7 +94,7 @@ def _build_combined_frame(
     combined["gas_year"] = gas_year(combined["date"])
     combined["gas_quarter"] = gas_quarter(combined["date"])
     combined["is_winter"] = combined["gas_quarter"].isin([1, 2]).astype(int)
-    combined["days_since_start"] = (combined["date"] - combined["date"].min()).dt.days
+    combined["days_since_start"] = (combined["date"] - TREND_EPOCH).dt.days
     combined["is_covid"] = (
         (combined["date"] >= _COVID_START) & (combined["date"] <= _COVID_END)
     ).astype(int)

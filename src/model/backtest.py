@@ -3,6 +3,11 @@
 Each test fold is a full Gas Year the model has never seen.  We run XGBoost
 alongside two baselines (seasonal naive, linear regression) so we can report
 the *lift* over naive approaches — not just the raw error.
+
+Important: this is a 1-step-ahead backtest.  Test-row demand lags use actual
+prior-day values, which is the correct framing for "given yesterday's outturn,
+what is tomorrow's demand?"  It does NOT simulate the compounding error of a
+recursive multi-day forecast — that's a different (harder) problem.
 """
 
 from __future__ import annotations

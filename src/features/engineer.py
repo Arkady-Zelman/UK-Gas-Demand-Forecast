@@ -22,6 +22,11 @@ HDD_BASE: float = get("weather.hdd_base", 15.5)
 CDD_BASE: float = get("weather.cdd_base", 22.0)
 GAS_YEAR_START_MONTH: int = get("gas_year.start_month", 10)
 
+# Fixed reference date for the trend feature.  Must be the same in training
+# and inference — using df.min() would silently break when the forecast
+# frame starts from a different date than the training set.
+TREND_EPOCH = pd.Timestamp(get("date_range.start", "2020-10-01"))
+
 # COVID lockdown windows — these materially distorted demand patterns
 _COVID_START = pd.Timestamp("2020-03-23")
 _COVID_END = pd.Timestamp("2021-06-21")
@@ -105,8 +110,9 @@ def build_features(
     df["gas_quarter"] = gas_quarter(df["date"])
     df["is_winter"] = df["gas_quarter"].isin([1, 2]).astype(int)
 
-    # Structural trend — captures long-run efficiency gains / demand decline
-    df["days_since_start"] = (df["date"] - df["date"].min()).dt.days
+    # Structural trend anchored to a fixed epoch so the value is identical
+    # in training and live inference (never use df.min() — it drifts)
+    df["days_since_start"] = (df["date"] - TREND_EPOCH).dt.days
 
     # COVID regime — lockdowns suppressed commercial/industrial demand
     df["is_covid"] = ((df["date"] >= _COVID_START) & (df["date"] <= _COVID_END)).astype(int)

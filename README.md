@@ -62,6 +62,8 @@ Walk-forward backtesting on Gas Year boundaries (expanding window):
 
 Each test set is a full gas year the model never saw during training — no data leakage.
 
+**Important caveat:** this is a **1-step-ahead** backtest.  Demand lags use actual prior-day values, which reflects the operational setting where a trader has yesterday's outturn each morning.  The 16-day recursive forecast on the dashboard is a different object — prediction error compounds because each day's lags come from prior predictions, not actuals.  Expect day-7+ accuracy to be worse than the backtest headline implies.
+
 ### Metrics & Diagnostics
 
 We lead with **RMSE** and **MAE** because they're stable at all demand levels.  MAPE is reported for intuition but should be treated with caution — it blows up on low-demand summer days (5 mcm error on a 140 mcm/d day looks much worse in percentage terms than the same error on a 300 mcm/d winter day).
@@ -77,7 +79,7 @@ Prediction intervals use **empirical quantiles** (5th/95th percentile) from the 
 
 ### Structural Breaks
 
-The COVID lockdown period (Mar 2020 – Jun 2021) is flagged as a regime dummy.  Without it, the model attributes the demand drop to weather and learns a spurious cold-sensitivity bias.  The `days_since_start` trend captures longer-run efficiency gains in building stock and boiler technology.
+The COVID lockdown period (Mar 2020 – Jun 2021) is flagged as a regime dummy.  Without it, the model attributes the demand drop to weather and learns a spurious cold-sensitivity bias.  The `days_since_start` trend captures longer-run efficiency gains in building stock and boiler technology — it is anchored to a fixed epoch date (config `date_range.start`) so that the feature value is identical in training and live inference.
 
 ## Dashboard
 

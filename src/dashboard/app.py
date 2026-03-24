@@ -383,7 +383,10 @@ def page_historical_fit():
 
     if view.startswith("Out-of-sample") and bt is not None:
         st.caption(
-            "Each point predicted by a model that never saw this gas year during training.")
+            "Each point is a 1-step-ahead prediction: the model never saw this gas year "
+            "during training, but demand lags use actual prior-day values (as a trader "
+            "would have each morning). This is not the same as the recursive multi-day "
+            "forecast shown on the Forecast page, where prediction error compounds.")
         ap = bt.all_predictions.copy()
         ap["date"] = pd.to_datetime(ap["date"])
 
@@ -701,6 +704,12 @@ def page_forecast():
             f"Intervals from empirical 5th/95th percentile of backtest residuals "
             f"(RMSE={m['rmse_mcm']:.1f} mcm/d, {len(bt.folds)} folds).  "
             f"Not Gaussian — we use the actual error distribution."
+        )
+        st.caption(
+            "Note: backtest RMSE reflects 1-step-ahead accuracy (actual prior-day "
+            "demand as lag input). This recursive forecast chains predictions, so "
+            "error compounds over the horizon — expect day-7+ accuracy to be "
+            "worse than the backtest headline suggests."
         )
 
 
