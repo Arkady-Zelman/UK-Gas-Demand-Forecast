@@ -1,12 +1,8 @@
+[Live dashboard]([https://your-app-url.example.com](https://arkady-zelman-uk-gas-demand-forecast-srcdashboardapp-8liq15.streamlit.app/))
+
 # UK Weather-Driven Gas Demand Forecast
 
-A machine learning model that forecasts daily UK gas demand from weather data, with walk-forward validation on Gas Year boundaries and honest baseline comparisons.
-
-## The Problem
-
-UK gas demand is dominated by space heating.  Winter peaks exceed 300 mcm/d while summer troughs sit around 140 mcm/d — a 2:1 ratio driven almost entirely by temperature.  Heating Degree Days (HDD) explain ~70-80% of daily variation on their own, but wind chill, calendar effects, and autoregressive demand patterns refine the picture.
-
-This project builds a production-quality demand forecasting pipeline: data ingestion, feature engineering, model training, walk-forward backtesting, live forecasting, and an interactive dashboard — all from free public APIs with no keys required.
+A machine learning model that forecasts daily UK gas demand from weather data, with walk-forward validation.
 
 ## Quick Start
 
@@ -44,13 +40,13 @@ The feature set reflects domain knowledge about what drives gas demand:
 
 **XGBoost** is the production model.  We also run two baselines through the same walk-forward folds to quantify the lift:
 
-| Model | Role | Why |
-|---|---|---|
-| XGBoost | Production | Handles mixed feature types well, easy to regularise, interpretable via SHAP |
-| Seasonal naive | Baseline | "Same day last year" — the dumbest plausible forecast.  Hard to beat in summer |
-| Linear (Ridge) | Baseline | Isolates how much lift comes from XGBoost's non-linearity vs the feature engineering |
+| Model | Role |
+|---|---|
+| XGBoost | Production |
+| Seasonal naive | Baseline |
+| Linear | Baseline |
 
-An **LSTM** module is included for comparison but is not used in production — on tabular data with well-engineered lag features, tree models consistently outperform simple recurrent architectures.
+An **LSTM** module is included for future development.
 
 ### Validation
 
