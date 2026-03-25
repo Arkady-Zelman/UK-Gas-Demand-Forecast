@@ -156,7 +156,6 @@ footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-
 # -- shared chart config ------------------------------------------------
 
 _LAYOUT = dict(
@@ -175,7 +174,7 @@ GREEN = "rgba(72,199,142,0.6)"
 RED = "rgba(231,106,100,0.6)"
 
 
-# -- data loaders -------------------------------------------------------
+# -- data loaders (always run — fast) -----------------------------------
 
 @st.cache_data(ttl=3600, show_spinner="Fetching demand data...")
 def load_demand() -> pd.DataFrame | None:
@@ -212,8 +211,22 @@ def train_model(_h: str) -> GasDemandXGB | None:
     return m
 
 
+def _hash() -> str:
+    d, w = load_demand(), load_weather()
+    return f"{len(d) if d is not None else 0}_{len(w) if w is not None else 0}"
+
+
+def _features():
+    demand, weather = load_demand(), load_weather()
+    if demand is None or weather is None:
+        return None
+    return build_features(demand, weather)
+
+
+# -- backtest (expensive — only on demand) ------------------------------
+
 @st.cache_data(ttl=7200, show_spinner="Running walk-forward backtest...")
-def run_backtest(_h: str) -> BacktestResult | None:
+def _run_backtest_cached(_h: str) -> BacktestResult | None:
     demand, weather = load_demand(), load_weather()
     if demand is None or weather is None:
         return None
@@ -227,16 +240,28 @@ def run_backtest(_h: str) -> BacktestResult | None:
         return None
 
 
-def _hash() -> str:
-    d, w = load_demand(), load_weather()
-    return f"{len(d) if d is not None else 0}_{len(w) if w is not None else 0}"
+def _get_backtest() -> BacktestResult | None:
+    """Return backtest result if it has been run, else None."""
+    return st.session_state.get("backtest_result")
 
 
-def _features():
-    demand, weather = load_demand(), load_weather()
-    if demand is None or weather is None:
-        return None
-    return build_features(demand, weather)
+def _trigger_backtest():
+    """Run backtest and store in session state."""
+    h = _hash()
+    result = _run_backtest_cached(h)
+    st.session_state["backtest_result"] = result
+
+
+def _backtest_button(location: str = "main") -> bool:
+    """Show a 'Run Full Analysis' button.  Returns True if backtest is available."""
+    bt = _get_backtest()
+    if bt is not None:
+        return True
+    st.info("Full analysis (walk-forward backtest, baselines, SHAP) has not been run yet.")
+    if st.button("Run Full Analysis", key=f"bt_{location}", use_container_width=True):
+        _trigger_backtest()
+        st.rerun()
+    return False
 
 
 # -- sidebar ------------------------------------------------------------
@@ -251,10 +276,21 @@ with st.sidebar:
         index=0, label_visibility="collapsed",
     )
     st.divider()
+
+    if _get_backtest() is None:
+        if st.button("Run Full Analysis", key="sidebar_bt", use_container_width=True):
+            _trigger_backtest()
+            st.rerun()
+        st.caption("Runs walk-forward backtest, baselines, and SHAP")
+    else:
+        st.caption("Full analysis complete")
+
+    st.divider()
     if st.button("Refresh Data", use_container_width=True):
         cache.clear()
         st.cache_data.clear()
         st.cache_resource.clear()
+        st.session_state.pop("backtest_result", None)
         st.rerun()
     st.caption(f"Data from {get('date_range.start')} onward")
     st.caption("National Gas · Open-Meteo")
@@ -266,42 +302,60 @@ def page_overview():
     st.header("Overview")
 
     h = _hash()
-    bt = run_backtest(h)
     model = train_model(h)
-    if bt is None or model is None:
+    if model is None:
         st.error("Could not load data or train model.")
         return
 
-    mt = bt.metrics_table
-    mean = mt[mt["fold"] == "Mean"].iloc[0]
+    bt = _get_backtest()
 
-    st.caption("WALK-FORWARD OUT-OF-SAMPLE PERFORMANCE")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("RMSE", f"{mean['rmse_mcm']:.1f} mcm/d")
-    c2.metric("MAPE", f"{mean['mape_pct']:.1f}%")
-    c3.metric("R²", f"{mean['r2']:.3f}")
-    c4.metric("MAE", f"{mean['mae_mcm']:.1f} mcm/d")
+    # If backtest available, show out-of-sample metrics
+    if bt is not None:
+        mt = bt.metrics_table
+        mean = mt[mt["fold"] == "Mean"].iloc[0]
 
-    # Baseline lift
-    bc = bt.baseline_comparison
-    if not bc.empty:
-        bc_mean = bc[bc["fold"] == "Mean"]
-        if not bc_mean.empty:
-            row = bc_mean.iloc[0]
-            naive_rmse = row.get("seasonal_naive_rmse", 0)
-            linear_rmse = row.get("linear_rmse", 0)
-            xgb_rmse = row.get("xgboost_rmse", 0)
-            if naive_rmse > 0:
-                lift_naive = (1 - xgb_rmse / naive_rmse) * 100
-                lift_linear = (1 - xgb_rmse / linear_rmse) * 100 if linear_rmse > 0 else 0
-                st.caption(
-                    f"XGBoost reduces RMSE by **{lift_naive:.0f}%** vs seasonal naive "
-                    f"and **{lift_linear:.0f}%** vs linear regression."
-                )
+        st.caption("WALK-FORWARD OUT-OF-SAMPLE PERFORMANCE")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("RMSE", f"{mean['rmse_mcm']:.1f} mcm/d")
+        c2.metric("MAPE", f"{mean['mape_pct']:.1f}%")
+        c3.metric("R²", f"{mean['r2']:.3f}")
+        c4.metric("MAE", f"{mean['mae_mcm']:.1f} mcm/d")
+
+        bc = bt.baseline_comparison
+        if not bc.empty:
+            bc_mean = bc[bc["fold"] == "Mean"]
+            if not bc_mean.empty:
+                row = bc_mean.iloc[0]
+                naive_rmse = row.get("seasonal_naive_rmse", 0)
+                linear_rmse = row.get("linear_rmse", 0)
+                xgb_rmse = row.get("xgboost_rmse", 0)
+                if naive_rmse > 0:
+                    lift_naive = (1 - xgb_rmse / naive_rmse) * 100
+                    lift_linear = (1 - xgb_rmse / linear_rmse) * 100 if linear_rmse > 0 else 0
+                    st.caption(
+                        f"XGBoost reduces RMSE by **{lift_naive:.0f}%** vs seasonal naive "
+                        f"and **{lift_linear:.0f}%** vs linear regression."
+                    )
+    else:
+        # Quick in-sample metrics as a fast preview
+        df = _features()
+        if df is not None:
+            preds = model.predict(df)
+            m = compute_metrics(df["demand_mcm"].values, preds)
+            st.caption("IN-SAMPLE FIT (run full analysis for out-of-sample metrics)")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("RMSE", f"{m['rmse_mcm']:.1f} mcm/d")
+            c2.metric("MAPE", f"{m['mape_pct']:.1f}%")
+            c3.metric("R²", f"{m['r2']:.3f}")
+            c4.metric("MAE", f"{m['mae_mcm']:.1f} mcm/d")
 
     st.markdown("")
 
-    resid = bt.all_predictions["actual"].values - bt.all_predictions["predicted"].values
+    # Forecast — uses backtest residuals for intervals if available, else ±10%
+    resid = None
+    if bt is not None:
+        resid = bt.all_predictions["actual"].values - bt.all_predictions["predicted"].values
+
     fc = generate_forecast(model, backtest_residuals=resid)
 
     if fc is not None and not fc.empty:
@@ -314,7 +368,8 @@ def page_overview():
             fig.add_trace(go.Scatter(
                 x=fc["date"], y=fc["lower_mcm"], mode="lines",
                 line=dict(width=0), fill="tonexty",
-                fillcolor="rgba(212,132,94,0.1)", name="90% interval"))
+                fillcolor="rgba(212,132,94,0.1)",
+                name="90% interval" if bt else "±10% band"))
         fig.add_trace(go.Scatter(
             x=fc["date"], y=fc["forecast_mcm"], mode="lines+markers",
             name="Demand forecast", line=dict(color=WARM, width=2.5),
@@ -345,18 +400,21 @@ def page_overview():
     else:
         st.info("Forecast unavailable — weather API may be down.")
 
-    with st.expander("Baseline Comparison"):
-        if not bc.empty:
-            st.dataframe(bc.style.format({
-                "xgboost_rmse": "{:.1f}", "xgboost_mape": "{:.1f}",
-                "seasonal_naive_rmse": "{:.1f}", "seasonal_naive_mape": "{:.1f}",
-                "linear_rmse": "{:.1f}", "linear_mape": "{:.1f}",
-            }, na_rep="—"), use_container_width=True)
-            st.caption(
-                "Seasonal naive = same calendar day from last year.  "
-                "Linear = Ridge regression on identical features.  "
-                "Both use the same walk-forward folds as XGBoost."
-            )
+    # Baseline comparison (only if backtest ran)
+    if bt is not None:
+        bc = bt.baseline_comparison
+        with st.expander("Baseline Comparison"):
+            if not bc.empty:
+                st.dataframe(bc.style.format({
+                    "xgboost_rmse": "{:.1f}", "xgboost_mape": "{:.1f}",
+                    "seasonal_naive_rmse": "{:.1f}", "seasonal_naive_mape": "{:.1f}",
+                    "linear_rmse": "{:.1f}", "linear_mape": "{:.1f}",
+                }, na_rep="—"), use_container_width=True)
+                st.caption(
+                    "Seasonal naive = same calendar day from last year.  "
+                    "Linear = Ridge regression on identical features.  "
+                    "Both use the same walk-forward folds as XGBoost."
+                )
 
 
 # == HISTORICAL FIT =====================================================
@@ -366,7 +424,7 @@ def page_historical_fit():
 
     h = _hash()
     model = train_model(h)
-    bt = run_backtest(h)
+    bt = _get_backtest()
     demand, weather = load_demand(), load_weather()
 
     if demand is None or weather is None or model is None:
@@ -377,9 +435,13 @@ def page_historical_fit():
     if df is None or df.empty:
         return
 
-    view = st.radio("View",
-        ["Out-of-sample (walk-forward)", "In-sample (training set)"],
-        index=0, horizontal=True)
+    # If backtest available, offer both views; otherwise just show in-sample
+    if bt is not None:
+        view = st.radio("View",
+            ["Out-of-sample (walk-forward)", "In-sample (training set)"],
+            index=0, horizontal=True)
+    else:
+        view = "In-sample (training set)"
 
     if view.startswith("Out-of-sample") and bt is not None:
         st.caption(
@@ -411,9 +473,14 @@ def page_historical_fit():
         y_true, y_pred = filt["actual"].values, filt["predicted"].values
 
     else:
-        st.caption(
-            "In-sample: model predicting data it trained on.  "
-            "Useful for spotting systematic patterns, not for quoting accuracy.")
+        if bt is None:
+            st.caption(
+                "Showing in-sample fit. Run full analysis for out-of-sample walk-forward results.")
+        else:
+            st.caption(
+                "In-sample: model predicting data it trained on.  "
+                "Useful for spotting systematic patterns, not for quoting accuracy.")
+
         preds = model.predict(df)
         df = df.copy()
         df["predicted"] = preds
@@ -459,13 +526,13 @@ def page_diagnostics():
 
     h = _hash()
     model = train_model(h)
-    bt = run_backtest(h)
+    bt = _get_backtest()
 
     if model is None:
         st.error("Model not available.")
         return
 
-    # Feature importance
+    # Feature importance — always available (fast, from fitted model)
     st.subheader("Feature Importance")
     fi = model.feature_importance()
     fig = px.bar(fi.head(15), x="importance", y="feature", orientation="h",
@@ -474,11 +541,16 @@ def page_diagnostics():
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
 
-    # SHAP partial dependence for top drivers
+    # Everything below requires the backtest
+    if bt is None:
+        st.divider()
+        _backtest_button("diag")
+        return
+
+    # SHAP partial dependence
     st.subheader("Partial Dependence — Top Drivers")
     st.caption(
-        "How each feature shifts the prediction while holding others constant. "
-        "Computed via SHAP where available, otherwise from the built-in XGBoost importance.")
+        "How each feature shifts the prediction while holding others constant.")
     df = _features()
     if df is not None and model.is_fitted:
         try:
@@ -506,9 +578,6 @@ def page_diagnostics():
             st.info("Install `shap` for partial dependence plots.")
         except Exception as exc:
             st.warning(f"SHAP computation failed: {exc}")
-
-    if bt is None:
-        return
 
     # Walk-forward fold table
     st.subheader("Walk-Forward Validation")
@@ -546,7 +615,6 @@ def page_diagnostics():
     acf_vals = residual_acf(resid, nlags=21)
     n = len(resid)
     ci = 1.96 / np.sqrt(n)
-    lags = list(range(len(acf_vals)))
 
     fig_acf = go.Figure()
     for lag, val in enumerate(acf_vals):
@@ -642,11 +710,11 @@ def page_forecast():
 
     h = _hash()
     model = train_model(h)
-    bt = run_backtest(h)
     if model is None:
         st.error("Model not available.")
         return
 
+    bt = _get_backtest()
     resid = None
     if bt is not None:
         ap = bt.all_predictions
@@ -665,7 +733,7 @@ def page_forecast():
             line=dict(width=0), showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=fc["date"], y=fc["lower_mcm"], mode="lines",
             line=dict(width=0), fill="tonexty", fillcolor="rgba(212,132,94,0.1)",
-            name="90% interval"))
+            name="90% interval" if bt else "±10% band"))
     fig.add_trace(go.Scatter(x=fc["date"], y=fc["forecast_mcm"],
         mode="lines+markers", name="Demand forecast",
         line=dict(color=WARM, width=2.5), marker=dict(size=5)))
@@ -710,6 +778,11 @@ def page_forecast():
             "demand as lag input). This recursive forecast chains predictions, so "
             "error compounds over the horizon — expect day-7+ accuracy to be "
             "worse than the backtest headline suggests."
+        )
+    else:
+        st.caption(
+            "Prediction intervals use a ±10% fallback. Run full analysis for "
+            "empirical intervals derived from walk-forward backtest residuals."
         )
 
 
