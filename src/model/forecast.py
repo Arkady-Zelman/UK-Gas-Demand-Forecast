@@ -71,6 +71,12 @@ def _build_combined_frame(
     combined = pd.concat([history, pd.DataFrame(fc_rows)], ignore_index=True)
     combined = combined.sort_values("date").reset_index(drop=True)
 
+    # Parquet/cache round-trips or API quirks can leave object dtypes; rolling
+    # and arithmetic require numeric columns (pandas 2.x raises otherwise).
+    for col in ("temp_mean", "temp_min", "temp_max", "windspeed_max", "demand_mcm"):
+        if col in combined.columns:
+            combined[col] = pd.to_numeric(combined[col], errors="coerce")
+
     fc_start = int(combined["demand_mcm"].isna().idxmax())
 
     # -- Weather-derived features (fully known for the entire horizon) --
